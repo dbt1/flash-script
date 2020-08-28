@@ -2,7 +2,7 @@
 
 Script was forked as template from https://github.com/neutrino-hd/meta-hd51
 
-# Extraction was done as follows:
+## Extraction was done as follows:
 ```bash
 $ git clone https://github.com/neutrino-hd/meta-hd51.git flash-script
 $ cd flash-script
