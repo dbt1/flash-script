@@ -1,4 +1,4 @@
-## Flash script for supported settopboxes
+## Flash script for supported set top boxes
 
 Script was forked as template from https://github.com/neutrino-hd/meta-hd51
 
