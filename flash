@@ -1,8 +1,8 @@
 #!/bin/sh
 
-machine="hd60"
+machine="hd61"
 url="https://tuxbox-images.de/images/$machine"
-image="OpenEmbedded-zeus-hd60_mmc.zip"
+image="OpenEmbedded-dunfell-hd61_mmc.zip"
 imagesource="$url/$image"
 hdd_mount="/media/usb"
 $(cat /proc/mounts | grep -q "/media/hdd") && hdd_mount="/media/hdd"
