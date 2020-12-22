@@ -1,134 +1,254 @@
 #!/bin/sh
+#set -x
 
-machine="h7"
-url="https://tuxbox-images.de/images/$machine"
-image="neutrino-image_ofgwrite.zip"
-imagesource="$url/$image"
-hdd_mount="/media/usb"
-$(cat /proc/mounts | grep -q "/media/hdd") && hdd_mount="/media/hdd"
-destination="/mnt/userdata"
-imagebase="$hdd_mount/service/image"
-imageversion_online="$url/imageversion"
-picture_source="/usr/share/tuxbox/neutrino/icons"
-rootfs="rootfs.tar.bz2"
-kernel_bin="kernel.bin"
-rootbase="linuxrootfs"
-kernelbase="linuxkernel"
-devbase="/dev/disk/by-partlabel"
-dev_display="/dev/dbox/oled0"
-root="$(sed -e 's/^.*rootsubdir=//' -e 's/ .*$//' < /proc/cmdline | grep -o '[1-4]')"
-res_setting="$(cat /etc/neutrino/config/neutrino.conf | grep osd_resolution | grep -o '[0-1]')"
-resolution="1920x1080"
-[ "$res_setting" = '0' ] && resolution="1280x720"
+# use common image info version file, shared with stb-flash.lua for the same setup
+FLASH_VERSION_FILE="/etc/image-version"
 
+# return string from config file
+# parameter 1 key name
+# parameter 2 default value
+get_config_string() {
+	KEY=$1
+	VAL=$2
+	if test ! -f $FLASH_VERSION_FILE; then
+		echo "$0 - $FLASH_VERSION_FILE not found!"
+		exit 1
+	fi
+
+	RET_TMP="$(cat $FLASH_VERSION_FILE | grep "$KEY=")"
+	RET=`echo "$RET_TMP" | sed 's/'"$KEY"'=//g'`
+
+	if [ "$RET" = "" ]; then
+		RET=$VAL
+	fi
+
+	echo $RET
+}
+
+# set basic variables from settings
+# get update url from config file
+IMAGE_UPDATE_URL=`get_config_string "image_update_url" "file:///media/sda1/service/images"`
+
+# get info filename from config file
+INFO_FILE_NAME=`get_config_string "image_update_info_file" "imageversion"`
+
+# get image name from from image-version file
+IMAGE_NAME=`get_config_string "imagename" "neutrino-image"`
+
+# get machine from image-version file
+MACHINE=`get_config_string "machine" ""`
+if [ "$MACHINE" == "" ]; then
+	echo "$0 - no machine defined! Please check key <machine> within $FLASH_VERSION_FILE"
+	exit 1
+fi
+
+# get image flash file name
+IMAGE_FILE_NAME=`get_config_string "image_file_name " $IMAGE_NAME"_"$MACHINE"_ofgwrite.zip"`
+IMAGE_SOURCE="$IMAGE_UPDATE_URL/$IMAGE_FILE_NAME"
+IMAGE_VERSION_ONLINE="$IMAGE_UPDATE_URL/$INFO_FILE_NAME"
+
+# screen background
+PICTURE_SOURCE="/usr/share/tuxbox/neutrino/icons"
+
+ROOTFS="rootfs.tar.bz2"
+KERNEL_BIN="kernel.bin"
+ROOT_BASE="linuxrootfs"
+KERNEL_BASE="linuxkernel"
+
+DESTINATION="/mnt/userdata"
+
+DEV_BASE="/dev/disk/by-partlabel"
+DEV_DISPLAY="/dev/dbox/oled0"
+
+# define work directory
+TMPDIR="/tmp/.`basename $0`"
+
+# ensure empty .flash directory, only for save 
+rm -rf "$TMPDIR"
+
+# set /tmp as default working directory
+HDD_MOUNT="$TMPDIR"
+
+# set possible removable mounted drives
+DRIVES="/media/usb /media/USB /media/hdd /media/Generic-"
+
+# check for mounted drives, if one of their available then use this as working directory
+for D in  $DRIVES ; do
+	DRIVE=`cat /proc/mounts | grep  "$D"`
+	if [ "$DRIVE" != "" ]; then
+		HDD_MOUNT="$D"
+		echo $HDD_MOUNT
+		break
+	fi
+done
+IMAGE_BASE="$HDD_MOUNT/service/image"
+
+
+# get current root partition
+ROOT_PART_CURRENT="$(sed -e 's/^.*rootsubdir=//' -e 's/ .*$//' < /proc/cmdline | grep -o '[1-4]')"
+
+# get current osd resolution settings from neutrino configuration
+# 0=1280x720
+# 1=1920x1080
+RES_SETTING="$(cat /etc/neutrino/config/neutrino.conf | grep osd_resolution | grep -o '[0-1]')"
+RESOLUTION="1920x1080"
+[ "$RES_SETTING" = '0' ] && RESOLUTION="1280x720"
+
+# get pid of neutrino and stop neutrino
 pidof neutrino >> /dev/null && systemctl stop neutrino
+# set output
 echo encoder > /proc/stb/avs/0/input
 
 clear
-which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_download.jpg bgra:/dev/fb0
+# show download screen
+which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_download.jpg bgra:/dev/fb0
 
 exit_done() {
-	if [[ "$no_update_available" = '1' ]];then
-		printf '\n\033[32m%s\n\033[0m' "No update available"
-		pidof neutrino >> /dev/null || systemctl start neutrino
-		exit 0;
-	elif [ "$root" = "$part" ];then
-		clear
-		which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_done.jpg bgra:/dev/fb0
-		which git >> /dev/null && cd /etc && git reset --hard >> /dev/null
-		echo "...Reboot"
-		echo "...Reboot" > "$dev_display" && systemctl reboot
-		exit 0;
-	else
-		which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_done.jpg bgra:/dev/fb0
-		sleep 3
-		clear
-		pidof neutrino >> /dev/null || systemctl start neutrino
-		exit 0;
-	fi
+    # cleanup work directory
+    rm -rf "$TMPDIR"
+    STR_REBOOT="...Reboot"
+    STR_START_NEUTRINO="...Restart"
+
+    if [[ "$NO_UPDATE_AVAILABLE" = '1' ]];then
+        printf '\n\033[32m%s\n\033[0m' "No update available"
+        pidof neutrino >> /dev/null || systemctl start neutrino
+        exit 0;
+    elif [ "$ROOT_PART_CURRENT" = "$PART" ];then
+        clear
+        which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_done.jpg bgra:/dev/fb0
+        which git >> /dev/null && cd /etc && git reset --hard >> /dev/null
+        echo "$STR_REBOOT"
+        echo "$STR_REBOOT" > "$DEV_DISPLAY" && systemctl reboot
+        exit 0;
+    else
+        which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_done.jpg bgra:/dev/fb0
+        echo "$STR_START_NEUTRINO"
+	echo "$STR_START_NEUTRINO" > "$DEV_DISPLAY"
+        sleep 3
+        clear
+        pidof neutrino >> /dev/null || systemctl start neutrino
+        exit 0;
+    fi
 }
 
-[[ "$*" = '-h' ]] || [[ "$*" = '--help' ]] &&  { printf '\n\033[31m%s\n' "Give the destination partition number [1 - 4] as first argument.
+[[ "$*" = '-h' ]] || [[ "$*" = '--help' ]] &&  { printf '\n%s\n' "Give the destination partition number [1 - 4] as first argument.
 As second argument you can specify the path where the image is stored.
 If no second argument is given the image will be downloaded from
-"$imagesource"
+"$IMAGE_SOURCE"
 " && exit 0;}
 
 if [ "$1" -lt 1 ] || [ "$1" -gt 4 ]; then
-	{ printf '\n\033[31m%s\n' "Choose a valid partition [1-4]" ; exit 1;}
+    { printf '\n\033[31m%s\n' "Choose a valid partition [1-4]" ; exit 1;}
 fi
 
 if [ "$1" = 1 ]; then
-	part=1; append=""
+    PART=1; APPEND=""
 elif [ "$1" = 2 ]; then
-	part=2; append="$part"
+    PART=2; APPEND="$PART"
 elif [ "$1" = 3 ]; then
-	part=3; append="$part"
+    PART=3; APPEND="$PART"
 elif [ "$1" = 4 ]; then
-	part=4; append="$part"
+    PART=4; APPEND="$PART"
 fi
 
-imageversion_local="$imagebase/imageversion_partition_$part"
+IMAGE_VERSION_LOCAL="$IMAGE_BASE/imageversion_partition_$PART"
 
 [ -z "$2" ] ||  echo "$2" | grep "/" >> /dev/null || [ "$2" = 'restore' ] || [ "$2" = 'force' ] || { printf '\n\033[31m%s\n' "Please choose a valid path" && exit 9; }
 
 function write_image () {
-	printf '\n\n\033[1m%s\n\033[0m' "Writing image into partition $part"
-	echo "Writing image into partition $part" > "$dev_display"
-	which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_kernel.jpg bgra:/dev/fb0
-	printf '\n\033[33m%s\033[37m%s\n' "Writing kernel into $devbase/$kernelbase$append"
-	pv -w 100 < "$imagedir"/"$kernel_bin" > "$devbase"/"$kernelbase$append"
+set -x
+	IMAGE_DIR=`find $IMAGE_BASE  -type d -name  $MACHINE`
+	
+	if test ! -f "$IMAGE_DIR"/"$KERNEL_BIN"; then
+		NO_KERNEL_IMAGE_FOUND="Flash failed, $IMAGE_DIR/$KERNEL_BIN not found"
+		printf '\n\033[31m%s\n' "$NO_KERNEL_IMAGE_FOUND"
+		echo "$FAIL_NO_KERNEL_IMAGE_FOUND" > "$DEV_DISPLAY"
+		exit_done;
+	fi
 
-	[ "$root" = "$part" ] || rm -rf "$destination"/"$rootbase$part"/*
+	if test ! -f "$IMAGE_DIR"/"$ROOTFS"; then
+		NO_ROOTFS_IMAGE_FOUND="Flash failed, $IMAGE_DIR/$ROOTFS not found"
+		printf '\n\033[31m%s\n' "$NO_ROOTFS_IMAGE_FOUND"
+		echo "$NO_ROOTFS_IMAGE_FOUND" > "$DEV_DISPLAY"
+		exit_done;
+	fi
 
-	which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_rootfs.jpg bgra:/dev/fb0
-	printf '\n\033[33m%s\033[37m%s\n' "Writing rootfs into $destination/$rootbase$part"
-	mkdir -p "$destination"/"$rootbase$part"
-	pv "$imagedir"/"$rootfs" -w 100 | tar -xjf - -C "$destination"/"$rootbase$part"
-	printf '\n\033[1m\033[32m%s\033[0m\n' "Flash successful"; printf '\033[1m\033[0m'
-	echo "Flash succeeded" > "$dev_display"
+	WRITE_IMAGE_INTO_PART="Writing image into partition $PART"
+	printf '\n\n\033[1m%s\n\033[0m' "$WRITE_IMAGE_INTO_PART"
+	echo "$WRITE_IMAGE_INTO_PART" > "$DEV_DISPLAY"
+
+	which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_kernel.jpg bgra:/dev/fb0
+
+	printf '\n\033[33m%s\033[37m%s\n' "Writing kernel into $DEV_BASE/$KERNEL_BASE$APPEND"
+	pv -w 100 < "$IMAGE_DIR"/"$KERNEL_BIN" > "$DEV_BASE"/"$KERNEL_BASE$APPEND"
+	[ "$ROOT_PART_CURRENT" = "$PART" ] || rm -rf "$DESTINATION"/"$ROOT_BASE$PART"/*
+
+	which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_rootfs.jpg bgra:/dev/fb0
+
+	printf '\n\033[33m%s\033[37m%s\n' "Writing rootfs into $DESTINATION/$ROOT_BASE$PART"
+	mkdir -p "$DESTINATION"/"$ROOT_BASE$PART"
+	pv "$IMAGE_DIR"/"$ROOTFS" -w 100 | tar -xjf - -C "$DESTINATION"/"$ROOT_BASE$PART"
+
+	FLASH_SUCCESS="Flash succeeded"
+	printf '\n\033[1m\033[32m%s\033[0m\n' "$FLASH_SUCCESS"; printf '\033[1m\033[0m'
+	echo "$FLASH_SUCCESS" > "$DEV_DISPLAY"
 	exit_done
 }
 
 case "$2" in
-	restore)
-		imagebase="$imagebase/backup/partition_$part"
-		;;
-	/*)
-		imagebase="$2"
-		;;
+    restore)
+        IMAGE_BASE="$IMAGE_BASE/backup/partition_$PART"
+        ;;
+    /*)
+        IMAGE_BASE="$2"
+        ;;
 esac
 
-imagedir="$imagebase/$machine"
-imagefile="$imagebase/$image"
-imageversion="$imagedir/imageversion"
-[ ! -d "$imagebase" ] && mkdir -p "$imagebase"
-space_available="$(df -Pk $imagebase | awk 'NR==2 {print $4}')"
-[ "$space_available" -lt 1048576 ] && printf '\n\033[31m%s\n' "You need at least 1G of free space on $hdd_mount" && exit_done
+IMAGE_DIR="$IMAGE_BASE/$MACHINE"
+IMAGE_FILE="$IMAGE_BASE/$IMAGE_FILE_NAME"
+IMAGE_VERSION="$IMAGE_DIR/imageversion"
+
+[ ! -d "$IMAGE_BASE" ] && mkdir -p "$IMAGE_BASE"
+
+SPACE_AVAILABLE="$(df -Pk $IMAGE_BASE | awk 'NR==2 {print $4}')"
+SPACE_NEEDED="You need at least 250MB of free space on $HDD_MOUNT"
+#[ "$SPACE_AVAILABLE" -lt 514032 ] && printf '\n\033[31m%s\n' "$SPACE_NEEDED" && exit_done
+[ "$SPACE_AVAILABLE" -lt 257016 ] && printf '\n\033[31m%s\n' "$SPACE_NEEDED" && exit_done
+
 if [ -z "$2" ]; then
-	[ ! -f "$imageversion_local" ] && touch "$imageversion_local"
-	md5_imageversion_online=$(curl -s "$imageversion_online" | md5sum | awk '{print $1}')
-	md5_imageversion_local=$(md5sum "$imageversion_local" | awk '{print $1}')
-	if [ "$md5_imageversion_online" = "$md5_imageversion_local" ]; then
-		echo "No update available" > "$dev_display"
-		no_update_available="1"
-		exit_done;
-	fi
+    [ ! -f "$IMAGE_VERSION_LOCAL" ] && touch "$IMAGE_VERSION_LOCAL"
+
+    MD5_IMAGE_VERSION_ONLINE=$(curl -s "$IMAGE_VERSION_ONLINE" | md5sum | awk '{print $1}')
+    MD5_IMAGE_VERSION_LOCAL=$(md5sum "$IMAGE_VERSION_LOCAL" | awk '{print $1}')
+
+    if [ "$MD5_IMAGE_VERSION_ONLINE" = "$MD5_IMAGE_VERSION_LOCAL" ]; then
+        echo "No update available" > "$DEV_DISPLAY"
+        NO_UPDATE_AVAILABLE="1"
+        exit_done;
+    fi
 fi
 if [ "$2" = 'force' ]; then
-	printf '\033[31m'
+    printf '\033[31m'
 fi
 if [ -z "$2" ] || [ "$2" = 'force' ]; then
-	echo "Downloading $image" > "$dev_display"
-	printf '\n\033[1m%s\n\033[0m' "Downloading $imagesource"
-	unpack="unzip -x $imagefile -d $imagebase"
-	curl "$imagesource" -o "$imagefile" || exit_done
-	[ -d "$imagedir" ] && rm -r "$imagedir"
-	echo "Decompressing $image" > "$dev_display"
-	printf '\n\033[1m%s\n\033[0m' "Decompressing  $image"
-	which convert >> /dev/null && convert -resize "$resolution" -gravity center -extent "$resolution" "$picture_source"/update_decompress.jpg bgra:/dev/fb0
-	$unpack || exit_done;
-	[ -f "$imageversion" ] && [ -d "$imagebase" ] && cp -rf "$imageversion" "$imageversion_local"
-	[ -f "$imagefile" ] && rm "$imagefile"
+    DECOMPRESSING="Downloading $IMAGE_FILE_NAME"
+    echo "$DECOMPRESSING" > "$DEV_DISPLAY"
+
+    printf '\n\033[1m%s\n\033[0m' "Downloading $IMAGE_SOURCE"
+
+    UNPACK="unzip -o -x $IMAGE_FILE -d $IMAGE_BASE"
+
+    curl "$IMAGE_SOURCE" -o "$IMAGE_FILE" || exit_done
+    #[ -d "$IMAGE_DIR" ] && rm -r "$IMAGE_DIR"
+
+    echo "$DECOMPRESSING" > "$DEV_DISPLAY"
+    printf '\n\033[1m%s\n\033[0m' "$DECOMPRESSING"
+
+    which convert >> /dev/null && convert -resize "$RESOLUTION" -gravity center -extent "$RESOLUTION" "$PICTURE_SOURCE"/update_decompress.jpg bgra:/dev/fb0
+
+    $UNPACK || exit_done;
+
+    [ -f "$IMAGE_VERSION" ] && [ -d "$IMAGE_BASE" ] && cp -rf "$IMAGE_VERSION" "$IMAGE_VERSION_LOCAL"
+    [ -f "$IMAGE_FILE" ] && rm "$IMAGE_FILE"
 fi
 write_image
